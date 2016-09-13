@@ -1,5 +1,6 @@
 #### _Before you open an issue_
 This library started as a basic bridge of the native iOS image picker, and I want to keep it that way. As such, functionality beyond what the native `UIImagePickerController` supports will not be supported here. **Multiple image selection, more control over the crop tool, and landscape support** are things missing from the native iOS functionality - **not issues with my library**. If you need these things, [react-native-image-crop-picker](https://github.com/ivpusic/react-native-image-crop-picker) might be a better choice for you.    
+As for Android, I want to keep it in parity with iOS. So while you may have better luck with cropping/landscape, we will not support multiple image selection there either.
 
 # react-native-image-picker
 A React Native module that allows you to use native UI to select a photo/video from the device library or directly from the camera, like so:
@@ -63,17 +64,22 @@ dependencies {
     ...
 ```
 ```java
-// file: android/app/src/main/java/com/<...>/MainApplication.java
+// file: android/app/src/main/java/com/<...>/MainActivity.java
 ...
 
-import com.imagepicker.ImagePickerPackage; // <-- add this import
+import com.imagepicker.ImagePickerPackage; // import package
 
-public class MainApplication extends Application implements ReactApplication {
+public class MainActivity extends ReactActivity {
+
+   /**
+   * A list of packages used by the app. If the app uses additional views
+   * or modules besides the default ones, add more packages here.
+   */
     @Override
     protected List<ReactPackage> getPackages() {
         return Arrays.<ReactPackage>asList(
             new MainReactPackage(),
-            new ImagePickerPackage() // <-- add this line
+            new ImagePickerPackage() // Add package
         );
     }
 ...
@@ -83,23 +89,22 @@ public class MainApplication extends Application implements ReactApplication {
 ## Usage
 
 ```javascript
-var Platform = require('react-native').Platform;
 var ImagePicker = require('react-native-image-picker');
 
 // More info on all the options is below in the README...just some common use cases shown here
 var options = {
   title: 'Select Avatar',
-  customButtons: [
-    {name: 'fb', title: 'Choose Photo from Facebook'},
-  ],
-  storageOptions: {
-    skipBackup: true,
+  customButtons: {
+    'Choose Photo from Facebook': 'fb',
+  },
+  storageOptions: { 
+    skipBackup: true, 
     path: 'images'
   }
 };
 
 /**
- * The first arg is the options object for customization (it can also be null or omitted for default options),
+ * The first arg is the options object for customization (it can also be null or omitted for default options), 
  * The second arg is the callback which sends object: response (more info below in README)
  */
 ImagePicker.showImagePicker(options, (response) => {
@@ -115,15 +120,13 @@ ImagePicker.showImagePicker(options, (response) => {
     console.log('User tapped custom button: ', response.customButton);
   }
   else {
-    // You can display the image using either data...
+    // You can display the image using either data:
     const source = {uri: 'data:image/jpeg;base64,' + response.data, isStatic: true};
 
-    // or a reference to the platform specific asset location
-    if (Platform.OS === 'ios') {
-      const source = {uri: response.uri.replace('file://', ''), isStatic: true};
-    } else {
-      const source = {uri: response.uri, isStatic: true};
-    }
+    // uri (on iOS)
+    const source = {uri: response.uri.replace('file://', ''), isStatic: true};
+    // uri (on android)
+    const source = {uri: response.uri, isStatic: true};
 
     this.setState({
       avatarSource: source
@@ -164,21 +167,22 @@ title | OK | OK | Specify `null` or empty string to remove the title
 cancelButtonTitle | OK | OK |
 takePhotoButtonTitle | OK | OK | Specify `null` or empty string to remove this button
 chooseFromLibraryButtonTitle | OK | OK | Specify `null` or empty string to remove this button
-customButtons | OK | OK | An array containing objects with the name and title of buttons
+customButtons | OK | OK | An object in the form of `[Button Text] : [String returned upon selection]`
 cameraType | OK | - | 'front' or 'back'
-mediaType | OK | OK | 'photo', 'video', or 'mixed' on iOS, 'photo' or 'video' on Android
+mediaType | OK | OK | 'video' or 'photo'
 maxWidth | OK | OK | Photos only
 maxHeight | OK | OK | Photos only
 quality | OK | OK | 0 to 1, photos only
 videoQuality | OK |  OK | 'low', 'medium', or 'high' on iOS, 'low' or 'high' on Android
 durationLimit | OK | OK | Max video recording time, in seconds
-rotation | - | OK | Photos only, 0 to 360 degrees of rotation
-allowsEditing | OK | - | bool - enables built in iOS functionality to resize the image after selection
+angle | - | OK | Photos only
+aspectX | - | OK | aspectX:aspectY, the crop box's width:height ratio
+aspectY | - | OK | aspectX:aspectY, the crop box's width:height ratio
+allowsEditing | OK | OK | bool - enables built in functionality to resize/reposition the image after selection
 noData | OK | OK | If true, disables the base64 `data` field from being generated (greatly improves performance on large photos)
 storageOptions | OK | OK | If this key is provided, the image will get saved in the Documents directory on iOS, and the Pictures directory on Android (rather than a temporary directory)
 storageOptions.skipBackup | OK | - | If true, the photo will NOT be backed up to iCloud
 storageOptions.path | OK | - | If set, will save image at /Documents/[path] rather than the root
-storageOptions.cameraRoll | OK | - | If true, the cropped photo will be saved to the iOS Camera roll.
 
 ### The Response Object
 

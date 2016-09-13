@@ -17,11 +17,9 @@ import android.os.Environment;
 import android.provider.MediaStore;
 import android.support.v4.app.ActivityCompat;
 import android.util.Base64;
-import android.util.Log;
 import android.widget.ArrayAdapter;
 import android.webkit.MimeTypeMap;
 import android.content.pm.PackageManager;
-import android.media.MediaScannerConnection;
 
 import com.facebook.react.bridge.ActivityEventListener;
 import com.facebook.react.bridge.Arguments;
@@ -30,7 +28,6 @@ import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.ReadableMap;
-import com.facebook.react.bridge.ReadableArray;
 import com.facebook.react.bridge.ReadableMapKeySetIterator;
 import com.facebook.react.bridge.WritableMap;
 
@@ -55,6 +52,8 @@ import java.util.Locale;
 import java.util.TimeZone;
 import java.util.UUID;
 
+import com.yalantis.ucrop.UCrop;
+
 public class ImagePickerModule extends ReactContextBaseJavaModule implements ActivityEventListener {
 
   static final int REQUEST_LAUNCH_IMAGE_CAPTURE = 1;
@@ -65,14 +64,19 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
   private final ReactApplicationContext mReactContext;
 
   private Uri mCameraCaptureURI;
+  private Uri mCropImagedUri;
   private Callback mCallback;
   private Boolean noData = false;
   private Boolean tmpImage;
+  private Boolean allowEditing = false;
   private Boolean pickVideo = false;
   private int maxWidth = 0;
   private int maxHeight = 0;
+  private int aspectX = 0;
+  private int aspectY = 0;
   private int quality = 100;
-  private int rotation = 0;
+  private int angle = 0;
+  private Boolean forceAngle = false;
   private int videoQuality = 1;
   private int videoDurationLimit = 0;
   WritableMap response;
@@ -117,16 +121,23 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
       titles.add(options.getString("chooseFromLibraryButtonTitle"));
       actions.add("library");
     }
+
+    String cancelButtonTitle = options.getString("cancelButtonTitle");
     if (options.hasKey("customButtons")) {
-      ReadableArray customButtons = options.getArray("customButtons");
-      for (int i = 0; i < customButtons.size(); i++) {
-        ReadableMap button = customButtons.getMap(i);
+      ReadableMap buttons = options.getMap("customButtons");
+      if (buttons != null) {
+        ReadableMapKeySetIterator it = buttons.keySetIterator();
+        // Keep the current size as the iterator returns the keys in the reverse order they are defined
         int currentIndex = titles.size();
-        titles.add(currentIndex, button.getString("title"));
-        actions.add(currentIndex, button.getString("name"));
+        while (it.hasNextKey()) {
+          String key = it.nextKey();
+
+          titles.add(currentIndex, key);
+          actions.add(currentIndex, buttons.getString(key));
+        }
       }
     }
-    String cancelButtonTitle = options.getString("cancelButtonTitle");
+
     titles.add(cancelButtonTitle);
     actions.add("cancel");
 
@@ -203,7 +214,7 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
 
     parseOptions(options);
 
-    if (pickVideo) {
+    if (pickVideo == true) {
       requestCode = REQUEST_LAUNCH_VIDEO_CAPTURE;
       cameraIntent = new Intent(MediaStore.ACTION_VIDEO_CAPTURE);
       cameraIntent.putExtra(MediaStore.EXTRA_VIDEO_QUALITY, videoQuality);
@@ -215,9 +226,15 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
       cameraIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
 
       // we create a tmp file to save the result
-      File imageFile = createNewFile();
+      File imageFile = createNewFile(true);
       mCameraCaptureURI = Uri.fromFile(imageFile);
-      cameraIntent.putExtra(MediaStore.EXTRA_OUTPUT, mCameraCaptureURI);
+      cameraIntent.putExtra(MediaStore.EXTRA_OUTPUT, Uri.fromFile(imageFile));
+
+      if (allowEditing == true) {
+        cameraIntent.putExtra("crop", "true");
+        cameraIntent.putExtra("aspectX", aspectX);
+        cameraIntent.putExtra("aspectY", aspectY);
+      }
     }
 
     if (cameraIntent.resolveActivity(mReactContext.getPackageManager()) == null) {
@@ -258,14 +275,25 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
 
     parseOptions(options);
 
-    if (pickVideo) {
+    if (pickVideo == true) {
       requestCode = REQUEST_LAUNCH_VIDEO_LIBRARY;
       libraryIntent = new Intent(Intent.ACTION_PICK);
       libraryIntent.setType("video/*");
     } else {
       requestCode = REQUEST_LAUNCH_IMAGE_LIBRARY;
       libraryIntent = new Intent(Intent.ACTION_PICK,
-      MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+      android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+
+      mCropImagedUri = null;
+      if (allowEditing == true) {
+        // create a file to save the croped image
+        File imageFile = createNewFile(true);
+        mCropImagedUri = Uri.fromFile(imageFile);
+        libraryIntent.putExtra(MediaStore.EXTRA_OUTPUT, mCropImagedUri);
+        libraryIntent.putExtra("crop", "true");
+        libraryIntent.putExtra("aspectX", aspectX);
+        libraryIntent.putExtra("aspectY", aspectY);
+      }
     }
 
     if (libraryIntent.resolveActivity(mReactContext.getPackageManager()) == null) {
@@ -288,11 +316,12 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
   }
 
   @Override
-  public void onActivityResult(final int requestCode, final int resultCode, final Intent data) {
+  public void onActivityResult(Activity activity, final int requestCode, final int resultCode, final Intent data) {
     //robustness code
     if (mCallback == null || (mCameraCaptureURI == null && requestCode == REQUEST_LAUNCH_IMAGE_CAPTURE)
             || (requestCode != REQUEST_LAUNCH_IMAGE_CAPTURE && requestCode != REQUEST_LAUNCH_IMAGE_LIBRARY
-            && requestCode != REQUEST_LAUNCH_VIDEO_LIBRARY && requestCode != REQUEST_LAUNCH_VIDEO_CAPTURE)) {
+            && requestCode != REQUEST_LAUNCH_VIDEO_LIBRARY && requestCode != REQUEST_LAUNCH_VIDEO_CAPTURE
+            && requestCode != UCrop.REQUEST_CROP)) {
       return;
     }
 
@@ -309,10 +338,27 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
     switch (requestCode) {
       case REQUEST_LAUNCH_IMAGE_CAPTURE:
         uri = mCameraCaptureURI;
-        this.fileScan(uri.getPath());
+        if (allowEditing) {
+          startCropping(activity, uri);
+          return;
+        }
         break;
       case REQUEST_LAUNCH_IMAGE_LIBRARY:
-        uri = data.getData();
+        if (mCropImagedUri != null) {
+          uri = mCropImagedUri;
+
+          // we check if we get the uri in response if we get it the crop failed so mCropImagedUri point to
+          // an empty file
+          Uri uriTmp = data.getData();
+          if (uriTmp != null)
+            uri = uriTmp;
+        } else {
+          uri = data.getData();
+        }
+        if (allowEditing) {
+          startCropping(activity, uri);
+          return;
+        }
         break;
       case REQUEST_LAUNCH_VIDEO_LIBRARY:
         response.putString("uri", data.getData().toString());
@@ -322,9 +368,11 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
       case REQUEST_LAUNCH_VIDEO_CAPTURE:
         response.putString("uri", data.getData().toString());
         response.putString("path", getRealPathFromURI(data.getData()));
-        this.fileScan(response.getString("path"));
         mCallback.invoke(response);
         return;
+      case UCrop.REQUEST_CROP:
+        uri = UCrop.getOutput(data);
+        break;
       default:
         uri = null;
     }
@@ -356,7 +404,7 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
       }
     }
 
-    int currentRotation = 0;
+    int CurrentAngle = 0;
     try {
       ExifInterface exif = new ExifInterface(realPath);
 
@@ -386,14 +434,14 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
       switch (orientation) {
         case ExifInterface.ORIENTATION_ROTATE_270:
           isVertical = false;
-          currentRotation = 270;
+          CurrentAngle = 270;
           break;
         case ExifInterface.ORIENTATION_ROTATE_90:
           isVertical = false;
-          currentRotation = 90;
+          CurrentAngle = 90;
           break;
         case ExifInterface.ORIENTATION_ROTATE_180:
-          currentRotation = 180;
+          CurrentAngle = 180;
           break;
       }
       response.putBoolean("isVertical", isVertical);
@@ -406,11 +454,14 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
 
     BitmapFactory.Options options = new BitmapFactory.Options();
     options.inJustDecodeBounds = true;
+    Bitmap photo = BitmapFactory.decodeFile(realPath, options);
     int initialWidth = options.outWidth;
     int initialHeight = options.outHeight;
 
     // don't create a new file if contraint are respected
-    if (((initialWidth < maxWidth && maxWidth > 0) || maxWidth == 0) && ((initialHeight < maxHeight && maxHeight > 0) || maxHeight == 0) && quality == 100 && (rotation == 0 || currentRotation == rotation)) {
+    if (((initialWidth < maxWidth && maxWidth > 0) || maxWidth == 0)
+            && ((initialHeight < maxHeight && maxHeight > 0) || maxHeight == 0)
+            && quality == 100 && (!forceAngle || (forceAngle && CurrentAngle == angle))) {
       response.putInt("width", initialWidth);
       response.putInt("height", initialHeight);
     } else {
@@ -420,6 +471,7 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
       } else {
          realPath = resized.getAbsolutePath();
          uri = Uri.fromFile(resized);
+         photo = BitmapFactory.decodeFile(realPath, options);
          response.putInt("width", options.outWidth);
          response.putInt("height", options.outHeight);
       }
@@ -435,6 +487,10 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
     putExtraFileInfo(realPath, response);
 
     mCallback.invoke(response);
+  }
+
+  @Override
+  public void onNewIntent(Intent intent) {
   }
 
   /**
@@ -520,7 +576,7 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
    * @throws Exception
    */
   private File createFileFromURI(Uri uri) throws Exception {
-    File file = new File(mReactContext.getExternalCacheDir(), "photo-" + uri.getLastPathSegment());
+    File file = new File(mReactContext.getCacheDir(), "photo-" + uri.getLastPathSegment());
     InputStream input = mReactContext.getContentResolver().openInputStream(uri);
     OutputStream output = new FileOutputStream(file);
 
@@ -563,7 +619,8 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
   }
 
   /**
-   * Create a resized image to fulfill the maxWidth/maxHeight, quality and rotation values
+   * Create a resized image to fill the maxWidth/maxHeight values,the quality
+   * value and the angle value
    *
    * @param realPath
    * @param initialWidth
@@ -594,7 +651,7 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
             : heightRatio;
 
     Matrix matrix = new Matrix();
-    matrix.postRotate(rotation);
+    matrix.postRotate(angle);
     matrix.postScale((float) ratio, (float) ratio);
 
     ExifInterface exif;
@@ -618,7 +675,7 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
     ByteArrayOutputStream bytes = new ByteArrayOutputStream();
     scaledphoto.compress(Bitmap.CompressFormat.JPEG, quality, bytes);
 
-    File f = createNewFile();
+    File f = createNewFile(false);
     FileOutputStream fo;
     try {
       fo = new FileOutputStream(f);
@@ -646,24 +703,23 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
    *
    * @return an empty file
    */
-  private File createNewFile() {
+  private File createNewFile(final boolean forcePictureDirectory) {
     String filename = "image-" + UUID.randomUUID().toString() + ".jpg";
-    File path;
-    if (tmpImage) {
-      path = mReactContext.getExternalCacheDir();
+    if (tmpImage && forcePictureDirectory != true) {
+      return new File(mReactContext.getCacheDir(), filename);
     } else {
-      path = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES);
-    }
+      File path = Environment.getExternalStoragePublicDirectory(
+              Environment.DIRECTORY_PICTURES);
+      File f = new File(path, filename);
 
-    File f = new File(path, filename);
-    try {
-      path.mkdirs();
-      f.createNewFile();
-    } catch (IOException e) {
-      e.printStackTrace();
+      try {
+        path.mkdirs();
+        f.createNewFile();
+      } catch (IOException e) {
+        e.printStackTrace();
+      }
+      return f;
     }
-
-    return f;
   }
 
   private void putExtraFileInfo(final String path, WritableMap response) {
@@ -696,6 +752,14 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
     if (options.hasKey("maxHeight")) {
       maxHeight = options.getInt("maxHeight");
     }
+    aspectX = 0;
+    if (options.hasKey("aspectX")) {
+      aspectX = options.getInt("aspectX");
+    }
+    aspectY = 0;
+    if (options.hasKey("aspectY")) {
+      aspectY = options.getInt("aspectY");
+    }
     quality = 100;
     if (options.hasKey("quality")) {
       quality = (int) (options.getDouble("quality") * 100);
@@ -704,9 +768,15 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
     if (options.hasKey("storageOptions")) {
       tmpImage = false;
     }
-    rotation = 0;
-    if (options.hasKey("rotation")) {
-      rotation = options.getInt("rotation");
+    allowEditing = false;
+    if (options.hasKey("allowsEditing")) {
+      allowEditing = options.getBoolean("allowsEditing");
+    }
+    forceAngle = false;
+    angle = 0;
+    if (options.hasKey("angle")) {
+      forceAngle = true;
+      angle = options.getInt("angle");
     }
     pickVideo = false;
     if (options.hasKey("mediaType") && options.getString("mediaType").equals("video")) {
@@ -722,17 +792,23 @@ public class ImagePickerModule extends ReactContextBaseJavaModule implements Act
     }
   }
 
-  public void fileScan(String path){
-    MediaScannerConnection.scanFile(mReactContext,
-            new String[] { path }, null,
-            new MediaScannerConnection.OnScanCompletedListener() {
+  public void startCropping(Activity activity, Uri uri) {
+      UCrop.Options options = new UCrop.Options();
+      options.setCompressionFormat(Bitmap.CompressFormat.JPEG);
 
-              public void onScanCompleted(String path, Uri uri) {
-                Log.i("TAG", "Finished scanning " + path);
-              }
-            });
+      UCrop.of(uri, Uri.fromFile(new File(this.getTmpDir(), UUID.randomUUID().toString() + ".jpg")))
+              .withMaxResultSize(maxWidth, maxHeight)
+              .withAspectRatio(aspectX, aspectY)
+              .withOptions(options)
+              .start(activity);
   }
 
-  // Required for RN 0.30+ modules than implement ActivityEventListener
-  public void onNewIntent(Intent intent) { }
+  public String getTmpDir() {
+        String tmpDir = mReactContext.getCacheDir() + "/react-native-image-picker";
+        Boolean created = new File(tmpDir).mkdir();
+
+        System.out.println(tmpDir);
+
+        return tmpDir;
+    }
 }
